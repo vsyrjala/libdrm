@@ -27,6 +27,8 @@
 #include "config.h"
 #endif
 
+#include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,10 +43,6 @@
 
 #include "format.h"
 #include "pattern.h"
-
-struct color_rgb24 {
-	unsigned int value:24;
-} __attribute__((__packed__));
 
 struct color_yuv {
 	unsigned char y;
@@ -71,7 +69,7 @@ struct color_yuv {
 	 (((a) >> (8 - (rgb)->alpha.length)) << (rgb)->alpha.offset))
 
 #define MAKE_RGB24(rgb, r, g, b) \
-	{ .value = MAKE_RGBA(rgb, r, g, b, 0) }
+	MAKE_RGBA(rgb, r, g, b, 0)
 
 static void fill_smpte_yuv_planar(const struct util_yuv_info *yuv,
 				  unsigned char *y_mem, unsigned char *u_mem,
@@ -276,9 +274,48 @@ static void fill_smpte_yuv_packed(const struct util_yuv_info *yuv, void *mem,
 	}
 }
 
+static void write_16(uint8_t *mem, int x, bool big_endian, uint16_t color)
+{
+	if (big_endian) {
+		mem[x * 2 + 0] = color >> 8;
+		mem[x * 2 + 1] = color >> 0;
+	} else {
+		mem[x * 2 + 0] = color >> 0;
+		mem[x * 2 + 1] = color >> 8;
+	}
+}
+
+static void write_24(uint8_t *mem, int x, bool big_endian, uint32_t color)
+{
+	if (big_endian) {
+		mem[x * 3 + 0] = color >> 16;
+		mem[x * 3 + 1] = color >> 8;
+		mem[x * 3 + 2] = color >> 0;
+	} else {
+		mem[x * 3 + 0] = color >> 0;
+		mem[x * 3 + 1] = color >> 8;
+		mem[x * 3 + 2] = color >> 16;
+	}
+}
+
+static void write_32(uint8_t *mem, int x, bool big_endian, uint32_t color)
+{
+	if (big_endian) {
+		mem[x * 4 + 0] = color >> 24;
+		mem[x * 4 + 1] = color >> 16;
+		mem[x * 4 + 2] = color >> 8;
+		mem[x * 4 + 3] = color >> 0;
+	} else {
+		mem[x * 4 + 0] = color >> 0;
+		mem[x * 4 + 1] = color >> 8;
+		mem[x * 4 + 2] = color >> 16;
+		mem[x * 4 + 3] = color >> 24;
+	}
+}
+
 static void fill_smpte_rgb16(const struct util_rgb_info *rgb, void *mem,
 			     unsigned int width, unsigned int height,
-			     unsigned int stride)
+			     unsigned int stride, bool big_endian)
 {
 	const uint16_t colors_top[] = {
 		MAKE_RGBA(rgb, 192, 192, 192, 255),	/* grey */
@@ -313,35 +350,38 @@ static void fill_smpte_rgb16(const struct util_rgb_info *rgb, void *mem,
 
 	for (y = 0; y < height * 6 / 9; ++y) {
 		for (x = 0; x < width; ++x)
-			((uint16_t *)mem)[x] = colors_top[x * 7 / width];
+			write_16(mem, x, big_endian,
+				 colors_top[x * 7 / width]);
 		mem += stride;
 	}
 
 	for (; y < height * 7 / 9; ++y) {
 		for (x = 0; x < width; ++x)
-			((uint16_t *)mem)[x] = colors_middle[x * 7 / width];
+			write_16(mem, x, big_endian,
+				 colors_middle[x * 7 / width]);
 		mem += stride;
 	}
 
 	for (; y < height; ++y) {
 		for (x = 0; x < width * 5 / 7; ++x)
-			((uint16_t *)mem)[x] =
-				colors_bottom[x * 4 / (width * 5 / 7)];
+			write_16(mem, x, big_endian,
+				 colors_bottom[x * 4 / (width * 5 / 7)]);
 		for (; x < width * 6 / 7; ++x)
-			((uint16_t *)mem)[x] =
-				colors_bottom[(x - width * 5 / 7) * 3
-					      / (width / 7) + 4];
+			write_16(mem, x, big_endian,
+				 colors_bottom[(x - width * 5 / 7) * 3
+					       / (width / 7) + 4]);
 		for (; x < width; ++x)
-			((uint16_t *)mem)[x] = colors_bottom[7];
+			write_16(mem, x, big_endian,
+				 colors_bottom[7]);
 		mem += stride;
 	}
 }
 
 static void fill_smpte_rgb24(const struct util_rgb_info *rgb, void *mem,
 			     unsigned int width, unsigned int height,
-			     unsigned int stride)
+			     unsigned int stride, bool big_endian)
 {
-	const struct color_rgb24 colors_top[] = {
+	const uint32_t colors_top[] = {
 		MAKE_RGB24(rgb, 192, 192, 192),	/* grey */
 		MAKE_RGB24(rgb, 192, 192, 0),	/* yellow */
 		MAKE_RGB24(rgb, 0, 192, 192),	/* cyan */
@@ -350,7 +390,7 @@ static void fill_smpte_rgb24(const struct util_rgb_info *rgb, void *mem,
 		MAKE_RGB24(rgb, 192, 0, 0),	/* red */
 		MAKE_RGB24(rgb, 0, 0, 192),	/* blue */
 	};
-	const struct color_rgb24 colors_middle[] = {
+	const uint32_t colors_middle[] = {
 		MAKE_RGB24(rgb, 0, 0, 192),	/* blue */
 		MAKE_RGB24(rgb, 19, 19, 19),	/* black */
 		MAKE_RGB24(rgb, 192, 0, 192),	/* magenta */
@@ -359,7 +399,7 @@ static void fill_smpte_rgb24(const struct util_rgb_info *rgb, void *mem,
 		MAKE_RGB24(rgb, 19, 19, 19),	/* black */
 		MAKE_RGB24(rgb, 192, 192, 192),	/* grey */
 	};
-	const struct color_rgb24 colors_bottom[] = {
+	const uint32_t colors_bottom[] = {
 		MAKE_RGB24(rgb, 0, 33, 76),	/* in-phase */
 		MAKE_RGB24(rgb, 255, 255, 255),	/* super white */
 		MAKE_RGB24(rgb, 50, 0, 106),	/* quadrature */
@@ -374,35 +414,36 @@ static void fill_smpte_rgb24(const struct util_rgb_info *rgb, void *mem,
 
 	for (y = 0; y < height * 6 / 9; ++y) {
 		for (x = 0; x < width; ++x)
-			((struct color_rgb24 *)mem)[x] =
-				colors_top[x * 7 / width];
+			write_24(mem, x, big_endian,
+				 colors_top[x * 7 / width]);
 		mem += stride;
 	}
 
 	for (; y < height * 7 / 9; ++y) {
 		for (x = 0; x < width; ++x)
-			((struct color_rgb24 *)mem)[x] =
-				colors_middle[x * 7 / width];
+			write_24(mem, x, big_endian,
+				 colors_top[x * 7 / width]);
 		mem += stride;
 	}
 
 	for (; y < height; ++y) {
 		for (x = 0; x < width * 5 / 7; ++x)
-			((struct color_rgb24 *)mem)[x] =
-				colors_bottom[x * 4 / (width * 5 / 7)];
+			write_24(mem, x, big_endian,
+				 colors_bottom[x * 4 / (width * 5 / 7)]);
 		for (; x < width * 6 / 7; ++x)
-			((struct color_rgb24 *)mem)[x] =
-				colors_bottom[(x - width * 5 / 7) * 3
-					      / (width / 7) + 4];
+			write_24(mem, x, big_endian,
+				 colors_bottom[(x - width * 5 / 7) * 3
+					       / (width / 7) + 4]);
 		for (; x < width; ++x)
-			((struct color_rgb24 *)mem)[x] = colors_bottom[7];
+			write_24(mem, x, big_endian,
+				 colors_bottom[7]);
 		mem += stride;
 	}
 }
 
 static void fill_smpte_rgb32(const struct util_rgb_info *rgb, void *mem,
 			     unsigned int width, unsigned int height,
-			     unsigned int stride)
+			     unsigned int stride, bool big_endian)
 {
 	const uint32_t colors_top[] = {
 		MAKE_RGBA(rgb, 192, 192, 192, 255),	/* grey */
@@ -437,26 +478,29 @@ static void fill_smpte_rgb32(const struct util_rgb_info *rgb, void *mem,
 
 	for (y = 0; y < height * 6 / 9; ++y) {
 		for (x = 0; x < width; ++x)
-			((uint32_t *)mem)[x] = colors_top[x * 7 / width];
+			write_32(mem, x, big_endian,
+				 colors_top[x * 7 / width]);
 		mem += stride;
 	}
 
 	for (; y < height * 7 / 9; ++y) {
 		for (x = 0; x < width; ++x)
-			((uint32_t *)mem)[x] = colors_middle[x * 7 / width];
+			write_32(mem, x, big_endian,
+				 colors_middle[x * 7 / width]);
 		mem += stride;
 	}
 
 	for (; y < height; ++y) {
 		for (x = 0; x < width * 5 / 7; ++x)
-			((uint32_t *)mem)[x] =
-				colors_bottom[x * 4 / (width * 5 / 7)];
+			write_32(mem, x, big_endian,
+				 colors_bottom[x * 4 / (width * 5 / 7)]);
 		for (; x < width * 6 / 7; ++x)
-			((uint32_t *)mem)[x] =
-				colors_bottom[(x - width * 5 / 7) * 3
-					      / (width / 7) + 4];
+			write_32(mem, x, big_endian,
+				 colors_bottom[(x - width * 5 / 7) * 3
+					       / (width / 7) + 4]);
 		for (; x < width; ++x)
-			((uint32_t *)mem)[x] = colors_bottom[7];
+			write_32(mem, x, big_endian,
+				 colors_bottom[7]);
 		mem += stride;
 	}
 }
@@ -466,12 +510,14 @@ static void fill_smpte(const struct util_format_info *info, void *planes[3],
 		       unsigned int stride)
 {
 	unsigned char *u, *v;
+	bool big_endian = info->format & DRM_FORMAT_BIG_ENDIAN;
 
-	switch (info->format) {
+	switch (info->format & ~DRM_FORMAT_BIG_ENDIAN) {
 	case DRM_FORMAT_UYVY:
 	case DRM_FORMAT_VYUY:
 	case DRM_FORMAT_YUYV:
 	case DRM_FORMAT_YVYU:
+		assert(!big_endian);
 		return fill_smpte_yuv_packed(&info->yuv, planes[0], width,
 					     height, stride);
 
@@ -479,16 +525,19 @@ static void fill_smpte(const struct util_format_info *info, void *planes[3],
 	case DRM_FORMAT_NV21:
 	case DRM_FORMAT_NV16:
 	case DRM_FORMAT_NV61:
+		assert(!big_endian);
 		u = info->yuv.order & YUV_YCbCr ? planes[1] : planes[1] + 1;
 		v = info->yuv.order & YUV_YCrCb ? planes[1] : planes[1] + 1;
 		return fill_smpte_yuv_planar(&info->yuv, planes[0], u, v,
 					     width, height, stride);
 
 	case DRM_FORMAT_YUV420:
+		assert(!big_endian);
 		return fill_smpte_yuv_planar(&info->yuv, planes[0], planes[1],
 					     planes[2], width, height, stride);
 
 	case DRM_FORMAT_YVU420:
+		assert(!big_endian);
 		return fill_smpte_yuv_planar(&info->yuv, planes[0], planes[2],
 					     planes[1], width, height, stride);
 
@@ -511,12 +560,15 @@ static void fill_smpte(const struct util_format_info *info, void *planes[3],
 	case DRM_FORMAT_BGRA5551:
 	case DRM_FORMAT_BGRX5551:
 		return fill_smpte_rgb16(&info->rgb, planes[0],
-					width, height, stride);
+					width, height, stride,
+					big_endian);
+
 
 	case DRM_FORMAT_BGR888:
 	case DRM_FORMAT_RGB888:
 		return fill_smpte_rgb24(&info->rgb, planes[0],
-					width, height, stride);
+					width, height, stride,
+					big_endian);
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XRGB8888:
 	case DRM_FORMAT_ABGR8888:
@@ -534,7 +586,8 @@ static void fill_smpte(const struct util_format_info *info, void *planes[3],
 	case DRM_FORMAT_BGRA1010102:
 	case DRM_FORMAT_BGRX1010102:
 		return fill_smpte_rgb32(&info->rgb, planes[0],
-					width, height, stride);
+					width, height, stride,
+					big_endian);
 	}
 }
 
@@ -553,7 +606,7 @@ static void make_pwetty(void *data, unsigned int width, unsigned int height,
 	cairo_format_t cairo_format;
 
 	/* we can ignore the order of R,G,B channels */
-	switch (format) {
+	switch (format & ~DRM_FORMAT_BIG_ENDIAN) {
 	case DRM_FORMAT_XRGB8888:
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XBGR8888:
@@ -562,6 +615,14 @@ static void make_pwetty(void *data, unsigned int width, unsigned int height,
 		break;
 	case DRM_FORMAT_RGB565:
 	case DRM_FORMAT_BGR565:
+		/* Cairo only understands CPU endianness */
+#ifdef __BIG_ENDIAN
+		if (!(format & DRM_FORMAT_BIG_ENDIAN))
+			return;
+#else
+		if (format & DRM_FORMAT_BIG_ENDIAN)
+			return;
+#endif
 		cairo_format = CAIRO_FORMAT_RGB16_565;
 		break;
 	default:
@@ -674,7 +735,7 @@ static void fill_tiles_yuv_packed(const struct util_format_info *info,
 
 static void fill_tiles_rgb16(const struct util_format_info *info, void *mem,
 			     unsigned int width, unsigned int height,
-			     unsigned int stride)
+			     unsigned int stride, bool big_endian)
 {
 	const struct util_rgb_info *rgb = &info->rgb;
 	void *mem_base = mem;
@@ -690,7 +751,7 @@ static void fill_tiles_rgb16(const struct util_format_info *info, void *mem,
 					  (rgb32 >> 8) & 0xff, rgb32 & 0xff,
 					  255);
 
-			((uint16_t *)mem)[x] = color;
+			write_16(mem, x, big_endian, color);
 		}
 		mem += stride;
 	}
@@ -700,7 +761,7 @@ static void fill_tiles_rgb16(const struct util_format_info *info, void *mem,
 
 static void fill_tiles_rgb24(const struct util_format_info *info, void *mem,
 			     unsigned int width, unsigned int height,
-			     unsigned int stride)
+			     unsigned int stride, bool big_endian)
 {
 	const struct util_rgb_info *rgb = &info->rgb;
 	unsigned int x, y;
@@ -710,11 +771,11 @@ static void fill_tiles_rgb24(const struct util_format_info *info, void *mem,
 			div_t d = div(x+y, width);
 			uint32_t rgb32 = 0x00130502 * (d.quot >> 6)
 				       + 0x000a1120 * (d.rem >> 6);
-			struct color_rgb24 color =
+			uint32_t color =
 				MAKE_RGB24(rgb, (rgb32 >> 16) & 0xff,
 					   (rgb32 >> 8) & 0xff, rgb32 & 0xff);
 
-			((struct color_rgb24 *)mem)[x] = color;
+			write_24(mem, x, big_endian, color);
 		}
 		mem += stride;
 	}
@@ -722,7 +783,7 @@ static void fill_tiles_rgb24(const struct util_format_info *info, void *mem,
 
 static void fill_tiles_rgb32(const struct util_format_info *info, void *mem,
 			     unsigned int width, unsigned int height,
-			     unsigned int stride)
+			     unsigned int stride, bool big_endian)
 {
 	const struct util_rgb_info *rgb = &info->rgb;
 	void *mem_base = mem;
@@ -739,7 +800,7 @@ static void fill_tiles_rgb32(const struct util_format_info *info, void *mem,
 					  (rgb32 >> 8) & 0xff, rgb32 & 0xff,
 					  alpha);
 
-			((uint32_t *)mem)[x] = color;
+			write_32(mem, x, big_endian, color);
 		}
 		mem += stride;
 	}
@@ -797,12 +858,13 @@ static void fill_tiles(const struct util_format_info *info, void *planes[3],
 	case DRM_FORMAT_BGRA5551:
 	case DRM_FORMAT_BGRX5551:
 		return fill_tiles_rgb16(info, planes[0],
-					width, height, stride);
-
+					width, height, stride,
+					info->format & DRM_FORMAT_BIG_ENDIAN);
 	case DRM_FORMAT_BGR888:
 	case DRM_FORMAT_RGB888:
 		return fill_tiles_rgb24(info, planes[0],
-					width, height, stride);
+					width, height, stride,
+					info->format & DRM_FORMAT_BIG_ENDIAN);
 	case DRM_FORMAT_ARGB8888:
 	case DRM_FORMAT_XRGB8888:
 	case DRM_FORMAT_ABGR8888:
@@ -820,7 +882,8 @@ static void fill_tiles(const struct util_format_info *info, void *planes[3],
 	case DRM_FORMAT_BGRA1010102:
 	case DRM_FORMAT_BGRX1010102:
 		return fill_tiles_rgb32(info, planes[0],
-					width, height, stride);
+					width, height, stride,
+					info->format & DRM_FORMAT_BIG_ENDIAN);
 	}
 }
 
